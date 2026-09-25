@@ -36,7 +36,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
-    """Serve simple-chat-card.js and auto-register it as a Lovelace resource."""
+    """Serve simple-chat-card.js and try to auto-register it as a Lovelace resource."""
     www_path = Path(__file__).parent / "frontend"
 
     try:
@@ -50,19 +50,32 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         hass.http.register_static_path(FRONTEND_URL_BASE, str(www_path), cache_headers=False)
 
     card_url = f"{FRONTEND_URL_BASE}/{CARD_FILENAME}"
+    _LOGGER.info("Simple Chat: karta sa servíruje na %s", card_url)
 
-    add_extra_js = hass.data.setdefault("frontend_extra_module_url", set())
-    if hasattr(add_extra_js, "add"):
-        add_extra_js.add(card_url)
+    registered = False
+    try:
+        # Only works for storage-mode dashboards, and only on HA versions that
+        # expose the resource collection this way - wrapped so a failure here
+        # never breaks integration setup.
+        resources = hass.data.get("lovelace", {}).get("resources")
+        if resources is not None:
+            if hasattr(resources, "async_items") and not getattr(resources, "loaded", True):
+                await resources.async_load()
+            existing_urls = {item.get("url") for item in resources.async_items()}
+            if card_url not in existing_urls:
+                await resources.async_create_item({"res_type": "module", "url": card_url})
+            registered = True
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Simple Chat: auto-registrácia resource zlyhala: %s", err)
+
+    if registered:
+        _LOGGER.info("Simple Chat: karta bola automaticky pridaná medzi Lovelace resources.")
     else:
-        # Fallback for HA versions exposing this via frontend.add_extra_js_url
-        try:
-            from homeassistant.components.frontend import add_extra_js_url
-
-            add_extra_js_url(hass, card_url, es5=False)
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning(
-                "Simple Chat card served at %s - add it manually as a Lovelace resource "
-                "(Settings > Dashboards > Resources) if it doesn't load automatically.",
-                card_url,
-            )
+        _LOGGER.warning(
+            "Simple Chat: karta sa nedala automaticky pridať medzi Lovelace resources "
+            "(bežné pri YAML dashboardoch alebo starších/novších verziách HA). "
+            "Pridaj ju ručne: Nastavenia > Dashboardy > tri bodky vpravo hore > "
+            "Resources > Add Resource > URL '%s', typ JavaScript Module. "
+            "Po pridaní urob hard refresh prehliadača (Ctrl+Shift+R).",
+            card_url,
+        )
