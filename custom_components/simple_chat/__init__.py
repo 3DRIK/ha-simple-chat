@@ -24,7 +24,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async_register_websocket_commands(hass)
 
-    await _async_register_frontend(hass)
+    try:
+        await _async_register_frontend(hass)
+    except Exception:  # noqa: BLE001
+        # Never let a frontend-registration problem take down the whole
+        # integration (websocket API + storage still work without it).
+        _LOGGER.exception(
+            "Simple Chat: registrácia frontendu zlyhala, karta pravdepodobne "
+            "nebude dostupná - websocket API a ukladanie správ ale fungujú ďalej."
+        )
 
     return True
 
@@ -39,15 +47,24 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
     """Serve simple-chat-card.js and try to auto-register it as a Lovelace resource."""
     www_path = Path(__file__).parent / "frontend"
 
-    try:
-        from homeassistant.components.http import StaticPathConfig
+    already_registered = hass.data.get(f"{DOMAIN}_static_registered", False)
+    if not already_registered:
+        try:
+            from homeassistant.components.http import StaticPathConfig
 
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(FRONTEND_URL_BASE, str(www_path), cache_headers=False)]
-        )
-    except ImportError:
-        # Older HA Core versions
-        hass.http.register_static_path(FRONTEND_URL_BASE, str(www_path), cache_headers=False)
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(FRONTEND_URL_BASE, str(www_path), cache_headers=False)]
+            )
+            hass.data[f"{DOMAIN}_static_registered"] = True
+        except ImportError:
+            # Very old HA Core versions that predate StaticPathConfig
+            hass.http.register_static_path(FRONTEND_URL_BASE, str(www_path), cache_headers=False)
+            hass.data[f"{DOMAIN}_static_registered"] = True
+        except RuntimeError as err:
+            # Route already exists on the underlying aiohttp app (e.g. entry
+            # was set up more than once) - not fatal, the file is already served.
+            _LOGGER.debug("Simple Chat: static path už bola zaregistrovaná: %s", err)
+            hass.data[f"{DOMAIN}_static_registered"] = True
 
     card_url = f"{FRONTEND_URL_BASE}/{CARD_FILENAME}"
     _LOGGER.info("Simple Chat: karta sa servíruje na %s", card_url)
